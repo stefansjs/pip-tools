@@ -12,7 +12,7 @@ from pip._internal.req import InstallRequirement
 from pip._internal.req.constructors import install_req_from_line
 from pip._internal.utils.misc import redact_auth_from_url
 
-from .._compat import parse_requirements
+from .._compat import parse_pipfile, parse_requirements
 from ..cache import DependencyCache
 from ..exceptions import PipToolsError
 from ..locations import CACHE_DIR
@@ -212,6 +212,13 @@ def _get_default_option(option_name: str) -> Any:
     default=True,
     help="Add index URL to generated file",
 )
+@click.option(
+    "--pipfile-dev",
+    "--dev",
+    is_flag=True,
+    default=False,
+    help="Whether to include pipfile [dev-packages] section",
+)
 def cli(
     ctx: click.Context,
     verbose: int,
@@ -242,6 +249,7 @@ def cli(
     cache_dir: str,
     pip_args_str: Optional[str],
     emit_index_url: bool,
+    pipfile_dev: bool,
 ) -> None:
     """Compiles requirements.txt from requirements.in specs."""
     log.verbosity = verbose - quiet
@@ -249,6 +257,8 @@ def cli(
     if len(src_files) == 0:
         if os.path.exists(DEFAULT_REQUIREMENTS_FILE):
             src_files = (DEFAULT_REQUIREMENTS_FILE,)
+        elif os.path.exists("Pipfile"):
+            src_files = ("Pipfile",)
         elif os.path.exists("setup.py"):
             src_files = ("setup.py",)
         else:
@@ -265,6 +275,10 @@ def cli(
             raise click.BadParameter("--output-file is required if input is from stdin")
         # Use default requirements output file if there is a setup.py the source file
         elif os.path.basename(src_files[0]) in METADATA_FILENAMES:
+            file_name = os.path.join(
+                os.path.dirname(src_files[0]), DEFAULT_REQUIREMENTS_OUTPUT_FILE
+            )
+        elif os.path.basename(src_files[0]) == "Pipfile":
             file_name = os.path.join(
                 os.path.dirname(src_files[0]), DEFAULT_REQUIREMENTS_OUTPUT_FILE
             )
@@ -354,6 +368,8 @@ def cli(
     setup_file_found = False
     for src_file in src_files:
         is_setup_file = os.path.basename(src_file) in METADATA_FILENAMES
+        is_pipfile = os.path.basename(src_file) == "Pipfile"
+
         if src_file == "-":
             # pip requires filenames and not files. Since we want to support
             # piping from stdin, we need to briefly save the input from stdin
@@ -374,6 +390,7 @@ def cli(
             for req in reqs:
                 req.comes_from = comes_from
             constraints.extend(reqs)
+
         elif is_setup_file:
             setup_file_found = True
             dist = meta.load(os.path.dirname(os.path.abspath(src_file)))
@@ -384,6 +401,17 @@ def cli(
                     for req in dist.requires or []
                 ]
             )
+
+        elif is_pipfile:
+            reqs = parse_pipfile(
+                src_file,
+                finder=repository.finder,
+                session=repository.session,
+                options=repository.options,
+                pipfile_dev=pipfile_dev,
+            )
+            constraints.extend(reqs)
+
         else:
             constraints.extend(
                 parse_requirements(
